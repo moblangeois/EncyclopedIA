@@ -167,7 +167,7 @@ class KnowledgeGraph:
                 embedding_similarity = similarity_matrix[i][j]
                 concept_similarity = self._calculate_concept_similarity(self.df.iloc[i]['concepts'], self.df.iloc[j]['concepts'])
                 
-                combined_similarity = 0.5 * embedding_similarity + 0.5 * concept_similarity
+                combined_similarity = 0.8 * embedding_similarity + 0.5 * concept_similarity
                 
                 if combined_similarity > self.similarity_threshold:
                     self.graph.add_edge(str(self.df.iloc[i]['id_enccre']), str(self.df.iloc[j]['id_enccre']), 
@@ -223,6 +223,38 @@ class KnowledgeGraph:
             if os.path.exists(file_path):
                 os.remove(file_path)
             raise
+        
+    def export_to_jsonld(self, file_path):
+        """
+        Exporte le graphe de connaissances au format JSON-LD.
+        
+        :param file_path: Chemin du fichier de sortie
+        """
+        jsonld_data = []
+        for node, data in self.graph.nodes(data=True):
+            node_data = {
+                "@id": f"http://example.org/node/{node}",
+                "@type": "Article",
+                "title": data.get('title', ''),
+                "content": data.get('content', ''),
+                "concepts": data.get('concepts', [])
+            }
+            jsonld_data.append(node_data)
+
+        for u, v, data in self.graph.edges(data=True):
+            edge_data = {
+                "@id": f"http://example.org/edge/{u}_{v}",
+                "@type": "Relationship",
+                "source": f"http://example.org/node/{u}",
+                "target": f"http://example.org/node/{v}",
+                "weight": data.get('weight', 0)
+            }
+            jsonld_data.append(edge_data)
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(jsonld_data, f, ensure_ascii=False, indent=2)
+
+        logging.info(f"Graphe exporté au format JSON-LD dans {file_path}")
 
     @classmethod
     def load_graph(cls, file_path, openai_api_key):
