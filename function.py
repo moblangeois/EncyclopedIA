@@ -66,19 +66,48 @@ class Pipe:
         self.user_id = None
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
-    def initialize(self):
+    async def initialize(self, __event_emitter__=None):
         """Initialize OpenAI client and load knowledge graph."""
-        self.client = OpenAI(api_key=self.valves.OPENAI_API_KEY)
-
         try:
-            logging.info("Downloading knowledge graph from URL...")
-            self.load_graph_from_url(self.valves.GRAPH_FILE_URL)
+            if self.valves.OPENAI_API_KEY:
+                self.client = OpenAI(api_key=self.valves.OPENAI_API_KEY)
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {
+                            "type": "message",
+                            "data": {
+                                "content": "Client OpenAI initialisé avec succès."
+                            },
+                        }
+                    )
+            else:
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {
+                            "type": "message",
+                            "data": {"content": "Erreur : Clé API OpenAI manquante."},
+                        }
+                    )
+                raise ValueError("La clé API OpenAI n'est pas définie.")
+
+            # Charger le graphe de connaissances
+            await self.load_graph_from_url(
+                self.valves.GRAPH_FILE_URL, __event_emitter__
+            )
 
         except Exception as e:
-            logging.error(f"Failed to load graph from URL: {str(e)}")
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "message",
+                        "data": {
+                            "content": f"Erreur lors de l'initialisation : {str(e)}"
+                        },
+                    }
+                )
             raise
 
-    def load_graph_from_url(self, url):
+    async def load_graph_from_url(self, url, __event_emitter__=None):
         """Download and load the knowledge graph from a given URL."""
         try:
             response = requests.get(url)
@@ -87,43 +116,79 @@ class Pipe:
             if response.content:  # Vérifier que le contenu n'est pas vide
                 jsonld_data = response.json()
             else:
-                logging.error("Le fichier JSON-LD récupéré est vide")
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {
+                            "type": "message",
+                            "data": {"content": "Le fichier JSON-LD récupéré est vide"},
+                        }
+                    )
                 raise ValueError("Le fichier JSON-LD est vide ou invalide.")
 
             G = nx.Graph()
 
             for item in jsonld_data:
                 if item["@type"] == "Article":
-                    node_id = str(item.get("@id", "")).split("/")[
-                        -1
-                    ]  # Convert to string if it's a float
-                    G.add_node(
-                        node_id,
-                        title=item.get("title", ""),
-                        content=item.get("content", ""),
-                        concepts=item.get("concepts", []),
-                        embedding=item.get("embedding", None),
+                    # Assurez-vous que l'ID n'est pas vide et que le noeud est bien ajouté avec un ID valide
+                    node_id = (
+                        str(item.get("@id", "")).split("/")[-1]
+                        if item.get("@id")
+                        else None
                     )
-                # Utilisation des triples RDF pour créer les arêtes
-                if "triples" in item:
-                    for triple in item["triples"]:
-                        # Convertir en chaîne de caractères avant d'appeler split()
-                        source = str(triple.get("subject", "")).split("/")[-1]
-                        target = str(triple.get("object", "")).split("/")[-1]
-                        predicate = triple.get("predicate", "")
-                        G.add_edge(source, target, label=predicate)
+                    if node_id:
+                        embedding = item.get("embedding", None)
+
+                        G.add_node(
+                            node_id,
+                            title=item.get("title", ""),
+                            content=item.get("content", ""),
+                            concepts=item.get("concepts", []),
+                            embedding=embedding,
+                        )
+                    else:
+                        # Log si l'ID est absent ou vide
+                        if __event_emitter__:
+                            await __event_emitter__(
+                                {
+                                    "type": "message",
+                                    "data": {
+                                        "content": f"Erreur : Noeud sans ID valide trouvé. Article : {item.get('title', 'Sans titre')}"
+                                    },
+                                }
+                            )
 
             self.knowledge_graph = G
-            logging.info(
-                f"Graphe chargé depuis URL. Nombre de nœuds : {G.number_of_nodes()}, Nombre d'arêtes : {G.number_of_edges()}"
-            )
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "message",
+                        "data": {
+                            "content": f"Graphe chargé depuis URL avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes."
+                        },
+                    }
+                )
+
         except requests.RequestException as e:
-            logging.error(
-                f"Erreur lors de la récupération du fichier JSON-LD : {str(e)}"
-            )
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "message",
+                        "data": {
+                            "content": f"Erreur lors de la récupération du fichier JSON-LD : {str(e)}"
+                        },
+                    }
+                )
             raise
         except Exception as e:
-            logging.error(f"Erreur lors du chargement du graphe : {str(e)}")
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "message",
+                        "data": {
+                            "content": f"Erreur lors du chargement du graphe : {str(e)}"
+                        },
+                    }
+                )
             raise
 
     def create_graph_html(self, graph_data):
@@ -227,9 +292,6 @@ class Pipe:
             if item["@type"] == "Article":
                 node_id = item["@id"].split("/")[-1]
                 embedding = item.get("embedding", None)
-                # Envoyer un message pour chaque nœud ingéré
-                if __event_emitter__:
-                    await __event_emitter__({"type": "message", "data": {"content": f"Nœud ajouté : {node_id}, avec embedding : {embedding}"}})
                 G.add_node(
                     node_id,
                     title=item.get("title", ""),
@@ -246,16 +308,27 @@ class Pipe:
                     G.add_edge(source, target, label=predicate)
 
         self.knowledge_graph = G
-        await __event_emitter__({
-            "type": "message",
-            "data": {"content": f"Graphe chargé avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes."}
-        })
+        await __event_emitter__(
+            {
+                "type": "message",
+                "data": {
+                    "content": f"Graphe chargé avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes."
+                },
+            }
+        )
 
     def get_embedding(self, text: str) -> List[float]:
-        response = self.client.embeddings.create(
-            model="text-embedding-3-small", input=text
-        )
-        return response.data[0].embedding
+        if not self.client:
+            raise ValueError("Le client OpenAI n'est pas initialisé.")
+
+        try:
+            response = self.client.embeddings.create(
+                model="text-embedding-3-small", input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logging.error(f"Erreur lors de la génération d'embedding : {str(e)}")
+            raise
 
     def generate_concepts(self, text: str) -> List[str]:
         prompt = f"""
@@ -294,8 +367,13 @@ class Pipe:
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-    def _retrieve_relevant_nodes(
-        self, query_embedding: List[float], query: str, k: int = 10, min_similarity: float = 0.05, __event_emitter__=None
+    async def _retrieve_relevant_nodes(
+        self,
+        query_embedding: List[float],
+        query: str,
+        k: int = 10,
+        min_similarity: float = 0.4,
+        __event_emitter__=None,
     ) -> List[Tuple[str, float]]:
 
         similarities = []
@@ -305,18 +383,15 @@ class Pipe:
                 similarity = self._cosine_similarity(query_embedding, embedding)
                 if similarity >= min_similarity:
                     similarities.append((node, similarity))
-                # Envoyer des messages avec l'émetteur pour suivre la progression
-                if __event_emitter__:
-                    await __event_emitter__({
-                        "type": "message",
-                        "data": {"content": f"Node: {node}, Similarity: {similarity}"}
-                    })
 
         # Tri des résultats par similarité décroissante
         return sorted(similarities, key=lambda x: x[1], reverse=True)[:k]
 
-    def _expand_context(
-        self, query: str, relevant_nodes: List[Tuple[str, float]]
+    async def _expand_context(
+        self,
+        query: str,
+        relevant_nodes: List[Tuple[str, float]],
+        __event_emitter__=None,
     ) -> Tuple[str, List[str], Dict[str, str], str]:
         expanded_context = ""
         traversal_path = []
@@ -437,6 +512,7 @@ class Pipe:
         self, query: str, __event_emitter__=None
     ) -> Tuple[str, List[str], Dict[str, str]]:
 
+        # Générer les embeddings de la requête
         query_embedding = self.get_embedding(query)
 
         await __event_emitter__(
@@ -445,7 +521,11 @@ class Pipe:
                 "data": {"content": "Recherche des nœuds pertinents...\n"},
             }
         )
-        relevant_nodes = self._retrieve_relevant_nodes(query_embedding, query)
+
+        # Assurez-vous d'utiliser 'await' ici car '_retrieve_relevant_nodes' est asynchrone
+        relevant_nodes = await self._retrieve_relevant_nodes(
+            query_embedding, query, __event_emitter__=__event_emitter__
+        )
 
         await __event_emitter__(
             {
@@ -462,8 +542,10 @@ class Pipe:
                 "data": {"content": "Expansion du contexte...\n"},
             }
         )
+
+        # Expansion du contexte, notez encore l'utilisation de 'await'
         expanded_context, traversal_path, filtered_content, final_answer = (
-            self._expand_context(query, relevant_nodes)
+            await self._expand_context(query, relevant_nodes, __event_emitter__)
         )
 
         return final_answer, traversal_path, filtered_content
@@ -476,7 +558,9 @@ class Pipe:
                     "data": {"description": "Initialisation...", "done": False},
                 }
             )
-            self.initialize()
+
+            # Utilisez 'await' ici pour vous assurer que l'initialisation est terminée avant de continuer
+            await self.initialize(__event_emitter__)
 
         self.user_id = __user__["id"]
         messages = body["messages"]
