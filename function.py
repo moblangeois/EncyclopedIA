@@ -217,7 +217,7 @@ class Pipe:
         file = Files.insert_new_file(self.user_id, form_data)
         return file.id
 
-    def load_graph_from_jsonld(self, file_path):
+    async def load_graph_from_jsonld(self, file_path, __event_emitter__=None):
         with open(file_path, "r", encoding="utf-8") as f:
             jsonld_data = json.load(f)
 
@@ -226,12 +226,16 @@ class Pipe:
         for item in jsonld_data:
             if item["@type"] == "Article":
                 node_id = item["@id"].split("/")[-1]
+                embedding = item.get("embedding", None)
+                # Envoyer un message pour chaque nœud ingéré
+                if __event_emitter__:
+                    await __event_emitter__({"type": "message", "data": {"content": f"Nœud ajouté : {node_id}, avec embedding : {embedding}"}})
                 G.add_node(
                     node_id,
                     title=item.get("title", ""),
                     content=item.get("content", ""),
                     concepts=item.get("concepts", []),
-                    embedding=item.get("embedding", None),
+                    embedding=embedding,
                 )
             # Utilisation des triples RDF pour créer les arêtes
             if "triples" in item:
@@ -242,9 +246,10 @@ class Pipe:
                     G.add_edge(source, target, label=predicate)
 
         self.knowledge_graph = G
-        logging.info(
-            f"Graphe chargé depuis JSON-LD. Nombre de nœuds : {G.number_of_nodes()}, Nombre d'arêtes : {G.number_of_edges()}"
-        )
+        await __event_emitter__({
+            "type": "message",
+            "data": {"content": f"Graphe chargé avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes."}
+        })
 
     def get_embedding(self, text: str) -> List[float]:
         response = self.client.embeddings.create(
@@ -290,22 +295,24 @@ class Pipe:
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
     def _retrieve_relevant_nodes(
-        self,
-        query_embedding: List[float],
-        query: str,
-        k: int = 10,
-        min_similarity: float = 0.05,
+        self, query_embedding: List[float], query: str, k: int = 10, min_similarity: float = 0.05, __event_emitter__=None
     ) -> List[Tuple[str, float]]:
 
         similarities = []
         for node in self.knowledge_graph.nodes:
-            # Assurez-vous que le nœud a bien un embedding avant de continuer
-            if node_embedding := self.knowledge_graph.nodes[node].get("embedding", None):
-                similarity = self._cosine_similarity(query_embedding, node_embedding)
+            embedding = self.knowledge_graph.nodes[node].get("embedding", None)
+            if embedding is not None:
+                similarity = self._cosine_similarity(query_embedding, embedding)
                 if similarity >= min_similarity:
                     similarities.append((node, similarity))
+                # Envoyer des messages avec l'émetteur pour suivre la progression
+                if __event_emitter__:
+                    await __event_emitter__({
+                        "type": "message",
+                        "data": {"content": f"Node: {node}, Similarity: {similarity}"}
+                    })
 
-        # Tri et sélection des k nœuds les plus pertinents
+        # Tri des résultats par similarité décroissante
         return sorted(similarities, key=lambda x: x[1], reverse=True)[:k]
 
     def _expand_context(
