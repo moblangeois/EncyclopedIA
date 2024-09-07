@@ -11,26 +11,47 @@
             margin: 0;
             padding: 0;
             font-family: Arial, sans-serif;
+            background-color: #1e1e1e;
+            color: #ffffff;
+            display: flex;
+        }
+        #graph-container {
+            flex: 1;
+            height: 100%;
         }
         #mynetwork {
             width: 100%;
-            height: 100vh;
-            border: 1px solid #ddd;
+            height: 100%;
         }
-        #info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            background-color: rgba(255, 255, 255, 0.8);
+        #content-panel {
+            width: 300px;
+            padding: 20px;
+            background-color: #2d2d2d;
+            overflow-y: auto;
+            display: none;
+        }
+        #content-panel h2 {
+            margin-top: 0;
+        }
+        .node {
+            background-color: rgba(255, 255, 255, 0.1);
+            border: none;
+            border-radius: 50%;
+            color: #ffffff;
             padding: 10px;
-            border-radius: 5px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            font-size: 12px;
+            text-align: center;
         }
     </style>
 </head>
 <body>
-    <div id="mynetwork"></div>
-    <div id="info">Cliquez sur un nœud pour plus d'informations</div>
+    <div id="graph-container">
+        <div id="mynetwork"></div>
+    </div>
+    <div id="content-panel">
+        <h2 id="article-title"></h2>
+        <div id="article-content"></div>
+    </div>
 
     <script>
         const nodes = new vis.DataSet({{nodes}});
@@ -44,14 +65,15 @@
                 size: 30,
                 font: {
                     size: 14,
-                    color: '#000000'
+                    color: '#ffffff'
                 },
-                borderWidth: 2,
-                shadow: true
+                borderWidth: 0,
+                shadow: false
             },
             edges: {
-                width: 2,
-                shadow: true
+                width: 1,
+                color: { color: '#ffffff', opacity: 0.5 },
+                shadow: false
             },
             physics: {
                 stabilization: false,
@@ -60,6 +82,9 @@
                     springConstant: 0.001,
                     springLength: 200
                 }
+            },
+            interaction: {
+                hover: true
             }
         };
 
@@ -69,10 +94,9 @@
             if (params.nodes.length > 0) {
                 const nodeId = params.nodes[0];
                 const node = nodes.get(nodeId);
-                document.getElementById('info').innerHTML = `
-                    <h3>${node.label}</h3>
-                    <p>ID: ${node.id}</p>
-                `;
+                document.getElementById('content-panel').style.display = 'block';
+                document.getElementById('article-title').innerText = node.label;
+                document.getElementById('article-content').innerText = node.content || "Pas de contenu disponible pour cet article.";
             }
         });
     </script>
