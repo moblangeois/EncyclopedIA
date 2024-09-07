@@ -3,64 +3,118 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Graphe de parcours interactif</title>
+    <title>Graphe de parcours interactif - Encyclopédie</title>
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
     <style>
         body, html {
             height: 100%;
             margin: 0;
             padding: 0;
-            font-family: Arial, sans-serif;
-            background-color: #2d2d2d;
-            color: #ffffff;
+            font-family: 'Roboto', sans-serif;
+            background-color: #f0e6d2;
+            color: #333;
         }
         #graph-container {
             width: 100%;
-            height: 100vh; /* Utilisation de 100vh pour prendre toute la hauteur de la fenêtre */
+            height: 100vh;
             position: relative;
+            background-color: #f9f2e3;
         }
         #mynetwork {
             width: 100%;
-            height: 100%; /* Assurez-vous que mynetwork prend bien toute la place disponible */
+            height: 100%;
         }
         #content-panel {
             position: absolute;
             top: 10px;
             right: 10px;
-            width: 300px;
-            padding: 10px;
-            background-color: rgba(45, 45, 45, 0.9);
-            border-radius: 5px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            width: 350px;
+            padding: 20px;
+            background-color: rgba(255, 255, 255, 0.95);
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             display: none;
+            max-height: 80vh;
+            overflow-y: auto;
         }
         #content-panel h2 {
             margin-top: 0;
-            font-size: 18px;
+            font-family: 'Playfair Display', serif;
+            font-size: 24px;
+            color: #2c3e50;
+            border-bottom: 2px solid #e74c3c;
+            padding-bottom: 10px;
         }
         #article-content {
-            font-size: 14px;
-            max-height: 200px;
-            overflow-y: auto;
+            font-size: 16px;
+            line-height: 1.6;
         }
-        #fullscreen-btn {
+        .control-btn {
             position: absolute;
-            top: 10px;
-            left: 10px;
             z-index: 1000;
-            background-color: rgba(255, 255, 255, 0.2);
+            background-color: #e74c3c;
             border: none;
             color: #ffffff;
-            padding: 5px 10px;
+            padding: 10px 15px;
             cursor: pointer;
-            border-radius: 3px;
+            border-radius: 5px;
+            font-family: 'Roboto', sans-serif;
+            font-weight: 700;
+            transition: background-color 0.3s ease;
+        }
+        .control-btn:hover {
+            background-color: #c0392b;
+        }
+        #fullscreen-btn {
+            top: 10px;
+            left: 10px;
+        }
+        #zoom-in-btn, #zoom-out-btn {
+            left: 10px;
+        }
+        #zoom-in-btn {
+            top: 60px;
+        }
+        #zoom-out-btn {
+            top: 110px;
+        }
+        #search-container {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            z-index: 1000;
+        }
+        #search-input {
+            padding: 10px;
+            width: 300px;
+            border: none;
+            border-radius: 5px 0 0 5px;
+            font-size: 16px;
+        }
+        #search-btn {
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 0 5px 5px 0;
+            cursor: pointer;
+            font-size: 16px;
         }
     </style>
 </head>
 <body>
     <div id="graph-container">
         <div id="mynetwork"></div>
-        <button id="fullscreen-btn">Plein écran</button>
+        <button id="fullscreen-btn" class="control-btn">Plein écran</button>
+        <button id="zoom-in-btn" class="control-btn">+</button>
+        <button id="zoom-out-btn" class="control-btn">-</button>
+        <div id="search-container">
+            <input type="text" id="search-input" placeholder="Rechercher un article...">
+            <button id="search-btn">Rechercher</button>
+        </div>
         <div id="content-panel">
             <h2 id="article-title"></h2>
             <div id="article-content"></div>
@@ -76,42 +130,46 @@
         const options = {
             nodes: {
                 shape: 'dot',
-                size: 20,
+                size: 25,
                 font: {
-                    size: 14,
-                    color: '#ffffff'
+                    size: 16,
+                    color: '#2c3e50',
+                    face: 'Roboto'
                 },
                 borderWidth: 2,
-                borderColor: '#ffffff',
+                borderColor: '#e74c3c',
                 color: {
-                    background: 'rgba(255, 255, 255, 0.3)',
-                    border: '#ffffff',
+                    background: '#ecf0f1',
+                    border: '#e74c3c',
                     highlight: {
-                        background: 'rgba(255, 255, 255, 0.7)',
-                        border: '#ffffff'
+                        background: '#e74c3c',
+                        border: '#c0392b'
                     }
                 },
                 shadow: {
                     enabled: true,
-                    color: 'rgba(0,0,0,0.5)',
-                    size: 5
+                    color: 'rgba(0,0,0,0.2)',
+                    size: 7
                 }
             },
             edges: {
                 width: 2,
-                color: { color: '#ffffff', opacity: 0.8 },
+                color: { color: '#bdc3c7', opacity: 0.8 },
+                smooth: {
+                    type: 'continuous'
+                },
                 shadow: {
                     enabled: true,
-                    color: 'rgba(0,0,0,0.5)',
+                    color: 'rgba(0,0,0,0.2)',
                     size: 5
                 }
             },
             physics: {
                 stabilization: false,
                 barnesHut: {
-                    gravitationalConstant: -2000,
-                    springConstant: 0.001,
-                    springLength: 100
+                    gravitationalConstant: -3000,
+                    springConstant: 0.002,
+                    springLength: 150
                 }
             },
             interaction: {
@@ -143,6 +201,32 @@
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
                 }
+            }
+        });
+
+        document.getElementById('zoom-in-btn').addEventListener('click', function() {
+            network.zoom(1.2);
+        });
+
+        document.getElementById('zoom-out-btn').addEventListener('click', function() {
+            network.zoom(0.8);
+        });
+
+        document.getElementById('search-btn').addEventListener('click', function() {
+            const searchTerm = document.getElementById('search-input').value.toLowerCase();
+            const foundNodes = nodes.get({
+                filter: function (item) {
+                    return item.label.toLowerCase().includes(searchTerm);
+                }
+            });
+            if (foundNodes.length > 0) {
+                network.focus(foundNodes[0].id, {
+                    scale: 1.2,
+                    animation: true
+                });
+                network.selectNodes([foundNodes[0].id]);
+            } else {
+                alert("Aucun article trouvé avec ce terme.");
             }
         });
 
