@@ -40,3 +40,15 @@ class Chatbot:
             
         except Exception as e:
             print(f"Erreur lors du traitement de la requête : {str(e)}")
+
+    def export_graph_jsonld(self, file_path):
+        if self.knowledge_graph:
+            self.knowledge_graph.export_to_jsonld(file_path)
+        else:
+            logging.error("Le graphe de connaissances n'a pas été initialisé.")
+
+    def export_graph_rdf(self, file_path):
+        if self.knowledge_graph:
+            self.knowledge_graph.export_to_rdf(file_path)
+        else:
+            logging.error("Le graphe de connaissances n'a pas été initialisé.")
