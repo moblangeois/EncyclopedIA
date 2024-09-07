@@ -11,12 +11,11 @@
             margin: 0;
             padding: 0;
             font-family: Arial, sans-serif;
-            background-color: #1e1e1e;
+            background-color: #2d2d2d;
             color: #ffffff;
-            display: flex;
         }
         #graph-container {
-            flex: 1;
+            width: 100%;
             height: 100%;
             position: relative;
         }
@@ -25,34 +24,36 @@
             height: 100%;
         }
         #content-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
             width: 300px;
-            padding: 20px;
-            background-color: #2d2d2d;
-            overflow-y: auto;
+            padding: 10px;
+            background-color: rgba(45, 45, 45, 0.9);
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
             display: none;
         }
         #content-panel h2 {
             margin-top: 0;
+            font-size: 18px;
         }
-        .node {
-            background-color: rgba(255, 255, 255, 0.2);
-            border: 2px solid #ffffff;
-            border-radius: 50%;
-            color: #ffffff;
-            padding: 10px;
+        #article-content {
             font-size: 14px;
-            text-align: center;
+            max-height: 200px;
+            overflow-y: auto;
         }
         #fullscreen-btn {
             position: absolute;
             top: 10px;
-            right: 10px;
+            left: 10px;
             z-index: 1000;
             background-color: rgba(255, 255, 255, 0.2);
             border: none;
             color: #ffffff;
             padding: 5px 10px;
             cursor: pointer;
+            border-radius: 3px;
         }
     </style>
 </head>
@@ -60,10 +61,10 @@
     <div id="graph-container">
         <div id="mynetwork"></div>
         <button id="fullscreen-btn">Plein écran</button>
-    </div>
-    <div id="content-panel">
-        <h2 id="article-title"></h2>
-        <div id="article-content"></div>
+        <div id="content-panel">
+            <h2 id="article-title"></h2>
+            <div id="article-content"></div>
+        </div>
     </div>
 
     <script>
@@ -75,7 +76,7 @@
         const options = {
             nodes: {
                 shape: 'dot',
-                size: 30,
+                size: 20,
                 font: {
                     size: 14,
                     color: '#ffffff'
@@ -83,31 +84,40 @@
                 borderWidth: 2,
                 borderColor: '#ffffff',
                 color: {
-                    background: 'rgba(255, 255, 255, 0.2)',
+                    background: 'rgba(255, 255, 255, 0.3)',
                     border: '#ffffff',
                     highlight: {
-                        background: 'rgba(255, 255, 255, 0.5)',
+                        background: 'rgba(255, 255, 255, 0.7)',
                         border: '#ffffff'
                     }
                 },
-                shadow: true
+                shadow: {
+                    enabled: true,
+                    color: 'rgba(0,0,0,0.5)',
+                    size: 5
+                }
             },
             edges: {
                 width: 2,
                 color: { color: '#ffffff', opacity: 0.8 },
-                shadow: true
+                shadow: {
+                    enabled: true,
+                    color: 'rgba(0,0,0,0.5)',
+                    size: 5
+                }
             },
             physics: {
                 stabilization: false,
                 barnesHut: {
-                    gravitationalConstant: -80000,
+                    gravitationalConstant: -2000,
                     springConstant: 0.001,
-                    springLength: 200
+                    springLength: 100
                 }
             },
             interaction: {
                 hover: true,
-                zoomView: true
+                zoomView: true,
+                dragView: true
             }
         };
 
@@ -117,9 +127,12 @@
             if (params.nodes.length > 0) {
                 const nodeId = params.nodes[0];
                 const node = nodes.get(nodeId);
-                document.getElementById('content-panel').style.display = 'block';
+                const contentPanel = document.getElementById('content-panel');
                 document.getElementById('article-title').innerText = node.label;
                 document.getElementById('article-content').innerText = node.content || "Pas de contenu disponible pour cet article.";
+                contentPanel.style.display = 'block';
+            } else {
+                document.getElementById('content-panel').style.display = 'none';
             }
         });
 
@@ -131,6 +144,11 @@
                     document.exitFullscreen();
                 }
             }
+        });
+
+        // Center the graph
+        network.once("afterDrawing", function() {
+            network.fit();
         });
     </script>
 </body>
