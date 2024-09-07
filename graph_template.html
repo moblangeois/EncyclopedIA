@@ -1,28 +1,80 @@
 <!DOCTYPE html>
-<html>
+<html lang="fr">
 <head>
-    <title>Graphe de parcours</title>
-    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-    <style type="text/css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graphe de parcours interactif</title>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
         #mynetwork {
             width: 100%;
-            height: 400px;
-            border: 1px solid lightgray;
+            height: 100vh;
+            border: 1px solid #ddd;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
     </style>
 </head>
 <body>
     <div id="mynetwork"></div>
-    <script type="text/javascript">
-        var nodes = new vis.DataSet({{nodes}});
-        var edges = new vis.DataSet({{edges}});
-        var container = document.getElementById('mynetwork');
-        var data = {
-            nodes: nodes,
-            edges: edges
+    <div id="info">Cliquez sur un nœud pour plus d'informations</div>
+
+    <script>
+        const nodes = new vis.DataSet({{nodes}});
+        const edges = new vis.DataSet({{edges}});
+
+        const container = document.getElementById('mynetwork');
+        const data = { nodes, edges };
+        const options = {
+            nodes: {
+                shape: 'dot',
+                size: 30,
+                font: {
+                    size: 14,
+                    color: '#000000'
+                },
+                borderWidth: 2,
+                shadow: true
+            },
+            edges: {
+                width: 2,
+                shadow: true
+            },
+            physics: {
+                stabilization: false,
+                barnesHut: {
+                    gravitationalConstant: -80000,
+                    springConstant: 0.001,
+                    springLength: 200
+                }
+            }
         };
-        var options = {};
-        var network = new vis.Network(container, data, options);
+
+        const network = new vis.Network(container, data, options);
+
+        network.on("click", function(params) {
+            if (params.nodes.length > 0) {
+                const nodeId = params.nodes[0];
+                const node = nodes.get(nodeId);
+                document.getElementById('info').innerHTML = `
+                    <h3>${node.label}</h3>
+                    <p>ID: ${node.id}</p>
+                `;
+            }
+        });
     </script>
 </body>
 </html>
