@@ -1,4 +1,4 @@
-""""
+"""
 title: Encyclopedia
 author: Morgan Blangeois
 version: 0.1
@@ -17,13 +17,14 @@ import json
 import requests
 from collections import defaultdict
 import re
+import asyncio
 
 # Third-party library imports
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from pydantic import BaseModel, Field
-from typing import List, Dict, Tuple, Any, Union
+from typing import List, Dict, Tuple, Any, Union, Optional
 from openai import OpenAI
 import tiktoken
 
@@ -50,12 +51,26 @@ class Pipe:
         MODEL_ID: str = Field(
             default="gpt-4o-mini", description="Modèle OpenAI à utiliser"
         )
-        SIMILARITY_THRESHOLD: float = Field(
-            default=0.6, description="Seuil de similarité pour ajouter des arêtes"
-        )
         GRAPH_TEMPLATE_URL: str = Field(
             default="https://raw.githubusercontent.com/moblangeois/EncyclopedIA/main/graph_template.html",
             description="URL du template HTML pour le graphe",
+        )
+        MAX_DEPTH: int = Field(
+            default=2, description="Profondeur maximale pour suivre les renvois"
+        )
+        TOP_K_NODES: int = Field(
+            default=10, description="Nombre de nœuds les plus pertinents à considérer"
+        )
+        MIN_SIMILARITY: float = Field(
+            default=0.4, description="Similarité minimale pour considérer un nœud"
+        )
+        MAX_ARTICLE_WORDS: int = Field(
+            default=400,
+            description="Nombre maximum de mots pour un article avant résumé",
+        )
+        QUERY_TIMEOUT: int = Field(
+            default=60,
+            description="Temps maximum en secondes pour traiter une requête",
         )
 
     def __init__(self):
@@ -76,7 +91,7 @@ class Pipe:
                         {
                             "type": "message",
                             "data": {
-                                "content": "Client OpenAI initialisé avec succès."
+                                "content": "Client OpenAI initialisé avec succès.\n"
                             },
                         }
                     )
@@ -85,15 +100,22 @@ class Pipe:
                     await __event_emitter__(
                         {
                             "type": "message",
-                            "data": {"content": "Erreur : Clé API OpenAI manquante."},
+                            "data": {
+                                "content": "Erreur : Clé API OpenAI manquante..\n"
+                            },
                         }
                     )
-                raise ValueError("La clé API OpenAI n'est pas définie.")
+                raise ValueError("La clé API OpenAI n'est pas définie..\n")
 
-            # Charger le graphe de connaissances
-            await self.load_graph_from_url(
-                self.valves.GRAPH_FILE_URL, __event_emitter__
-            )
+            # Check for local file first
+            local_graph_path = "/app/backend/EDdA_knowledge_graph.jsonld"
+            if os.path.exists(local_graph_path):
+                await self.load_graph_from_jsonld(local_graph_path, __event_emitter__)
+            else:
+                # If local file doesn't exist, download the graph from the URL
+                await self.load_graph_from_url(
+                    self.valves.GRAPH_FILE_URL, __event_emitter__
+                )
 
         except Exception as e:
             if __event_emitter__:
@@ -101,7 +123,7 @@ class Pipe:
                     {
                         "type": "message",
                         "data": {
-                            "content": f"Erreur lors de l'initialisation : {str(e)}"
+                            "content": f"Erreur lors de l'initialisation : {str(e)}.\n"
                         },
                     }
                 )
@@ -163,7 +185,7 @@ class Pipe:
                     {
                         "type": "message",
                         "data": {
-                            "content": f"Graphe chargé depuis URL avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes."
+                            "content": f"Graphe chargé depuis URL avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes.\n"
                         },
                     }
                 )
@@ -234,6 +256,7 @@ class Pipe:
             )
 
             return html_content
+
         except requests.RequestException as e:
             logging.error(f"Erreur lors de la récupération du template HTML : {str(e)}")
             # Utiliser un template de secours simple en cas d'erreur
@@ -246,6 +269,12 @@ class Pipe:
             </body>
             </html>
             """
+
+    def _find_node_by_title(self, title: str) -> Optional[str]:
+        for node, data in self.knowledge_graph.nodes(data=True):
+            if data.get("title", "").lower() == title.lower():
+                return node
+        return None
 
     def create_file(
         self, file_name: str, title: str, content: Union[str, bytes], content_type: str
@@ -290,7 +319,23 @@ class Pipe:
 
         for item in jsonld_data:
             if item["@type"] == "Article":
-                node_id = item["@id"].split("/")[-1]
+                # Ensure @id is a string and check its type before splitting
+                raw_id = item.get("@id", "")
+                if isinstance(raw_id, str):
+                    node_id = raw_id.split("/")[-1]
+                else:
+                    # Handle non-string @id (e.g., floats or other types)
+                    """
+                    if __event_emitter__:
+                        await __event_emitter__(
+                            {
+                                "type": "message",
+                                "data": {"content": f"Skipping invalid ID: {raw_id}"},
+                            }
+                        )
+                    """
+                    continue  # Skip this item if the ID is not valid
+
                 embedding = item.get("embedding", None)
                 G.add_node(
                     node_id,
@@ -299,13 +344,30 @@ class Pipe:
                     concepts=item.get("concepts", []),
                     embedding=embedding,
                 )
+
             # Utilisation des triples RDF pour créer les arêtes
             if "triples" in item:
                 for triple in item["triples"]:
-                    source = triple["subject"].split("/")[-1]
-                    target = triple["object"].split("/")[-1]
-                    predicate = triple["predicate"]
-                    G.add_edge(source, target, label=predicate)
+                    subject = triple.get("subject", "")
+                    object_ = triple.get("object", "")
+
+                    # Ensure both subject and object are strings before splitting
+                    if isinstance(subject, str) and isinstance(object_, str):
+                        source = subject.split("/")[-1]
+                        target = object_.split("/")[-1]
+                        predicate = triple.get("predicate", "")
+                        G.add_edge(source, target, label=predicate)
+                    else:
+                        if __event_emitter__:
+                            await __event_emitter__(
+                                {
+                                    "type": "message",
+                                    "data": {
+                                        "content": f"Skipping invalid triple: subject={subject}, object={object_}"
+                                    },
+                                }
+                            )
+                        continue  # Skip invalid triples
 
         self.knowledge_graph = G
         await __event_emitter__(
@@ -371,21 +433,20 @@ class Pipe:
         self,
         query_embedding: List[float],
         query: str,
-        k: int = 10,
-        min_similarity: float = 0.4,
         __event_emitter__=None,
     ) -> List[Tuple[str, float]]:
-
         similarities = []
         for node in self.knowledge_graph.nodes:
             embedding = self.knowledge_graph.nodes[node].get("embedding", None)
             if embedding is not None:
                 similarity = self._cosine_similarity(query_embedding, embedding)
-                if similarity >= min_similarity:
+                if similarity >= self.valves.MIN_SIMILARITY:
                     similarities.append((node, similarity))
 
         # Tri des résultats par similarité décroissante
-        return sorted(similarities, key=lambda x: x[1], reverse=True)[:k]
+        return sorted(similarities, key=lambda x: x[1], reverse=True)[
+            : self.valves.TOP_K_NODES
+        ]
 
     async def _expand_context(
         self,
@@ -396,10 +457,15 @@ class Pipe:
         expanded_context = ""
         traversal_path = []
         filtered_content = {}
+        references_explored = set()  # Pour éviter les boucles infinies
 
         query_concepts = self.generate_concepts(query)
 
-        for node, similarity in relevant_nodes:
+        async def explore_node(node, depth, similarity=None, from_reference=False):
+            if depth > self.valves.MAX_DEPTH or node in references_explored:
+                return
+
+            references_explored.add(node)
             if node not in traversal_path:
                 traversal_path.append(node)
                 node_data = self.knowledge_graph.nodes[node]
@@ -407,47 +473,69 @@ class Pipe:
                 node_concepts = node_data.get("concepts", [])
                 node_author = node_data.get("author", "Auteur inconnu")
                 node_domain = node_data.get("domain", "Domaine non spécifié")
+                node_references = node_data.get("references", [])
 
-                # Filtrer le contenu en fonction de la pertinence avec la requête
-                relevant_sentences = self._extract_relevant_sentences(
-                    node_content, query_concepts
-                )
-                filtered_content[node] = "\n".join(relevant_sentences)
+                prepared_content = await self._prepare_article_content(node_content)
+                filtered_content[node] = prepared_content
 
-                expanded_context += f"\n\nArticle : {node_data.get('title', '')}\n"
+                nonlocal expanded_context
+                expanded_context += f"\n\n{'='*50}\n"
+                expanded_context += f"Article : {node_data.get('title', '')}\n"
                 expanded_context += f"Auteur : {node_author}\n"
                 expanded_context += f"Domaine : {node_domain}\n"
                 expanded_context += f"Concepts clés : {', '.join(node_concepts)}\n"
-                expanded_context += f"Contenu pertinent : {filtered_content[node]}\n"
-                expanded_context += f"Similarité avec la requête : {similarity:.2f}\n"
+                expanded_context += f"Contenu : {filtered_content[node]}\n"
+                if similarity is not None:
+                    expanded_context += (
+                        f"Similarité avec la requête : {similarity:.2f}\n"
+                    )
+                if from_reference:
+                    expanded_context += (
+                        "Cet article a été exploré à partir d'un renvoi.\n"
+                    )
 
-                # Étendre le contexte avec les nœuds liés
+                await __event_emitter__(
+                    {
+                        "type": "message",
+                        "data": {
+                            "content": f"Exploration de l'article : {node_data.get('title', '')}\n"
+                        },
+                    }
+                )
+
+                # Explorer les renvois
+                for ref in node_references:
+                    ref_node = self._find_node_by_title(ref)
+                    if ref_node:
+                        await __event_emitter__(
+                            {
+                                "type": "message",
+                                "data": {
+                                    "content": f"Suivant le renvoi vers : {ref}\n"
+                                },
+                            }
+                        )
+                        await explore_node(ref_node, depth + 1, from_reference=True)
+
+                # Explorer les nœuds voisins
                 neighbors = list(self.knowledge_graph.neighbors(node))
                 for neighbor in neighbors:
                     if neighbor not in traversal_path:
-                        traversal_path.append(neighbor)
                         neighbor_data = self.knowledge_graph.nodes[neighbor]
-                        neighbor_content = neighbor_data.get("content", "")
                         neighbor_concepts = neighbor_data.get("concepts", [])
-
-                        # Vérifier la pertinence du nœud voisin
                         if self._is_relevant(neighbor_concepts, query_concepts):
-                            relevant_sentences = self._extract_relevant_sentences(
-                                neighbor_content, query_concepts
+                            await __event_emitter__(
+                                {
+                                    "type": "message",
+                                    "data": {
+                                        "content": f"Exploration du nœud voisin : {neighbor_data.get('title', '')}\n"
+                                    },
+                                }
                             )
-                            filtered_content[neighbor] = "\n".join(relevant_sentences)
+                            await explore_node(neighbor, depth + 1)
 
-                            expanded_context += (
-                                f"\n\nArticle lié : {neighbor_data.get('title', '')}\n"
-                            )
-                            expanded_context += f"Auteur : {neighbor_data.get('author', 'Auteur inconnu')}\n"
-                            expanded_context += f"Domaine : {neighbor_data.get('domain', 'Domaine non spécifié')}\n"
-                            expanded_context += (
-                                f"Concepts clés : {', '.join(neighbor_concepts)}\n"
-                            )
-                            expanded_context += (
-                                f"Contenu pertinent : {filtered_content[neighbor]}\n"
-                            )
+        for node, similarity in relevant_nodes:
+            await explore_node(node, 0, similarity)
 
         prompt = f"""En vous basant sur le contexte suivant extrait de l'Encyclopédie de Diderot et d'Alembert, 
         veuillez répondre à la requête. Votre réponse doit :
@@ -456,6 +544,8 @@ class Pipe:
         3. Expliquer les éventuelles divergences ou évolutions dans la compréhension des concepts.
         4. Contextualiser la réponse dans le cadre des idées des Lumières du 18ème siècle.
         5. Mentionner explicitement les sources (articles et auteurs) utilisées dans votre réponse.
+        6. Indiquer les renvois pertinents et expliquer leur importance dans le contexte de la requête.
+        7. Ne s'appuyer que sur le contexte fourni.
     
         Contexte : 
         {expanded_context}
@@ -470,7 +560,7 @@ class Pipe:
                 messages=[
                     {
                         "role": "system",
-                        "content": "Vous êtes un expert en histoire des idées du 18ème siècle, spécialisé dans l'analyse de l'Encyclopédie de Diderot et d'Alembert.",
+                        "content": "Vous vous appuyez sur le contexte fourni pour rédiger votre réponse.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -485,6 +575,36 @@ class Pipe:
         sentences = text.split(".")
         return [s for s in sentences if any(c.lower() in s.lower() for c in concepts)]
 
+    async def _prepare_article_content(self, content: str) -> str:
+        words = content.split()
+        if len(words) <= self.valves.MAX_ARTICLE_WORDS:
+            return content
+        else:
+            # Utiliser l'API pour résumer l'article
+            summary_prompt = f"""Résumez l'article suivant de l'Encyclopédie en environ {self.valves.MAX_ARTICLE_WORDS} mots, 
+            en conservant les informations et concepts clés :
+    
+            {content}
+    
+            Résumé :"""
+
+            summary = (
+                self.client.chat.completions.create(
+                    model=self.valves.MODEL_ID,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Vous êtes un expert en résumé de textes historiques.",
+                        },
+                        {"role": "user", "content": summary_prompt},
+                    ],
+                )
+                .choices[0]
+                .message.content
+            )
+
+            return summary
+
     def _is_relevant(self, node_concepts: List[str], query_concepts: List[str]) -> bool:
         return len(set(node_concepts) & set(query_concepts)) > 0
 
@@ -493,62 +613,96 @@ class Pipe:
         nodes = []
         edges = []
 
-        for node in G.nodes():
+        for i, node in enumerate(traversal_path):
             node_data = G.nodes[node]
             nodes.append(
                 {
                     "id": node,
-                    "label": node_data.get("title", node),
+                    "label": f"{i+1}. {node_data.get('title', node)}",
                     "content": node_data.get("content", ""),
+                    "references": node_data.get("references", []),
+                    "order": i,
                 }
             )
 
         for edge in G.edges():
             edges.append({"from": edge[0], "to": edge[1]})
 
+        # Ajouter des arêtes pour les renvois
+        for i, node in enumerate(traversal_path):
+            node_data = G.nodes[node]
+            for ref in node_data.get("references", []):
+                ref_node = self._find_node_by_title(ref)
+                if ref_node and ref_node in traversal_path:
+                    edges.append(
+                        {
+                            "from": node,
+                            "to": ref_node,
+                            "dashes": True,
+                            "label": f"Renvoi {i+1} -> {traversal_path.index(ref_node)+1}",
+                            "arrows": "to",
+                        }
+                    )
+
         return {"nodes": nodes, "edges": edges}
 
     async def query(
         self, query: str, __event_emitter__=None
     ) -> Tuple[str, List[str], Dict[str, str]]:
+        try:
+            query_embedding = self.get_embedding(query)
 
-        # Générer les embeddings de la requête
-        query_embedding = self.get_embedding(query)
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {"content": "Recherche des nœuds pertinents...\n"},
+                }
+            )
 
-        await __event_emitter__(
-            {
-                "type": "message",
-                "data": {"content": "Recherche des nœuds pertinents...\n"},
-            }
-        )
+            relevant_nodes = await self._retrieve_relevant_nodes(
+                query_embedding, query, __event_emitter__=__event_emitter__
+            )
 
-        # Assurez-vous d'utiliser 'await' ici car '_retrieve_relevant_nodes' est asynchrone
-        relevant_nodes = await self._retrieve_relevant_nodes(
-            query_embedding, query, __event_emitter__=__event_emitter__
-        )
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": f"Nœuds pertinents trouvés : {[self.knowledge_graph.nodes[node].get('title', node) for node, _ in relevant_nodes]}\n"
+                    },
+                }
+            )
 
-        await __event_emitter__(
-            {
-                "type": "message",
-                "data": {
-                    "content": f"Nœuds pertinents trouvés : {[self.knowledge_graph.nodes[node].get('title', node) for node, _ in relevant_nodes]}\n"
-                },
-            }
-        )
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": f"Expansion du contexte et exploration des renvois (profondeur max : {self.valves.MAX_DEPTH})...\n"
+                    },
+                }
+            )
 
-        await __event_emitter__(
-            {
-                "type": "message",
-                "data": {"content": "Expansion du contexte...\n"},
-            }
-        )
+            expanded_context, traversal_path, filtered_content, final_answer = (
+                await self._expand_context(query, relevant_nodes, __event_emitter__)
+            )
 
-        # Expansion du contexte, notez encore l'utilisation de 'await'
-        expanded_context, traversal_path, filtered_content, final_answer = (
-            await self._expand_context(query, relevant_nodes, __event_emitter__)
-        )
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {"content": "Génération de la réponse finale...\n"},
+                }
+            )
 
-        return final_answer, traversal_path, filtered_content
+            return final_answer, traversal_path, filtered_content
+
+        except Exception as e:
+            logging.error(f"Erreur dans la méthode query : {str(e)}")
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {"content": f"Erreur dans la méthode query : {str(e)}\n"},
+                }
+            )
+            raise
 
     async def pipe(self, body: dict, __user__: dict, __event_emitter__=None):
         if not self.client or not self.knowledge_graph:
@@ -558,8 +712,6 @@ class Pipe:
                     "data": {"description": "Initialisation...", "done": False},
                 }
             )
-
-            # Utilisez 'await' ici pour vous assurer que l'initialisation est terminée avant de continuer
             await self.initialize(__event_emitter__)
 
         self.user_id = __user__["id"]
@@ -577,9 +729,16 @@ class Pipe:
                 }
             )
 
-            answer, traversal_path, _ = await self.query(
-                user_message, __event_emitter__
-            )
+            # Utiliser asyncio.wait_for pour implémenter un timeout
+            try:
+                answer, traversal_path, _ = await asyncio.wait_for(
+                    self.query(user_message, __event_emitter__),
+                    timeout=self.valves.QUERY_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"Le traitement de la requête a dépassé le temps imparti ({self.valves.QUERY_TIMEOUT} secondes)"
+                )
 
             if answer is None or traversal_path is None:
                 raise ValueError("La requête n'a pas produit de résultat valide.")
@@ -604,7 +763,6 @@ class Pipe:
 
             html_content = self.create_graph_html(graph_data)
 
-            # Créer un fichier HTML avec le graphe interactif
             graph_file_id = self.create_file(
                 f"graph_{uuid.uuid4()}.html",
                 "Graphe de parcours",

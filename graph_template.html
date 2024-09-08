@@ -111,6 +111,8 @@
         <button id="fullscreen-btn" class="control-btn">Plein écran</button>
         <button id="zoom-in-btn" class="control-btn">+</button>
         <button id="zoom-out-btn" class="control-btn">-</button>
+        <button id="show-path-btn" class="control-btn">Afficher le parcours</button>
+
         <div id="search-container">
             <input type="text" id="search-input" placeholder="Rechercher un article...">
             <button id="search-btn">Rechercher</button>
@@ -176,6 +178,9 @@
                 hover: true,
                 zoomView: true,
                 dragView: true
+            },
+            arrows: {
+                to: { enabled: true, scaleFactor: 1, type: 'arrow' }
             }
         };
 
@@ -192,6 +197,41 @@
             } else {
                 document.getElementById('content-panel').style.display = 'none';
             }
+
+                // Fonction pour mettre en évidence le chemin parcouru
+    function highlightPath() {
+        const nodeIds = nodes.getIds();
+        const edgeIds = edges.getIds();
+        
+        // Réinitialiser tous les nœuds et arêtes
+        nodeIds.forEach(id => {
+            nodes.update({id: id, color: {background: '#ecf0f1', border: '#e74c3c'}});
+        });
+        edgeIds.forEach(id => {
+            edges.update({id: id, color: {color: '#bdc3c7', opacity: 0.8}, width: 2});
+        });
+
+        // Mettre en évidence le chemin parcouru
+        nodeIds.sort((a, b) => nodes.get(a).order - nodes.get(b).order);
+        for (let i = 0; i < nodeIds.length - 1; i++) {
+            const currentNode = nodeIds[i];
+            const nextNode = nodeIds[i + 1];
+            
+            nodes.update({id: currentNode, color: {background: '#e74c3c', border: '#c0392b'}});
+            nodes.update({id: nextNode, color: {background: '#e74c3c', border: '#c0392b'}});
+            
+            const edge = edges.get({
+                filter: function (item) {
+                    return (item.from === currentNode && item.to === nextNode) ||
+                           (item.from === nextNode && item.to === currentNode);
+                }
+            })[0];
+
+            if (edge) {
+                edges.update({id: edge.id, color: {color: '#e74c3c', opacity: 1}, width: 4});
+            }
+        }
+    }
         });
 
         document.getElementById('fullscreen-btn').addEventListener('click', function() {
@@ -203,6 +243,9 @@
                 }
             }
         });
+
+        document.getElementById('show-path-btn').addEventListener('click', highlightPath);
+
 
         document.getElementById('zoom-in-btn').addEventListener('click', function() {
             network.zoom(1.2);
