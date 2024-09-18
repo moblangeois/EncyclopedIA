@@ -1,3 +1,4 @@
 /.env
 /__pycache__
-venv/
+/batch_files
+/_old
