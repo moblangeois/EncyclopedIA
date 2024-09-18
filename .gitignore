@@ -2,3 +2,5 @@
 /__pycache__/
 /batch_files/
 /_old/
+data/EDdA_knowledge_graph_int8.jsonld
+data/EDdA_knowledge_graph.jsonld
