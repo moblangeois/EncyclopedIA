@@ -1,46 +1,28 @@
 """
-title: Encyclopedia
+title: Encycloscope
 author: Morgan Blangeois
 version: 0.8
-requirements: openai>=1.44.1, matplotlib
+requirements: openai>=1.44.1
 """
 
 # Standard library imports
 import os
 import logging
-import pickle
-import base64
-import io
-import traceback
-import time
 import uuid
 import json
-import requests
-from collections import defaultdict
-import re
 import asyncio
 
 # Third-party library imports
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from pydantic import BaseModel, Field
-from typing import List, Dict, Tuple, Any, Union, Optional
+from typing import List, Dict, Tuple, Union, Optional
 from openai import OpenAI
 import tiktoken
-from sklearn.decomposition import PCA
 
 # Local imports
 from open_webui.utils.misc import get_last_user_message
 from open_webui.apps.webui.models.files import Files
-
-
-class Concepts(BaseModel):
-    """Model for representing extracted concepts."""
-
-    concepts: List[str] = Field(
-        ..., description="List of key concepts extracted from the text"
-    )
 
 
 class Pipe:
@@ -135,10 +117,6 @@ class Pipe:
 
     def create_graph_html(self, graph_data):
         try:
-            # Afficher les données du graphe pour vérifier leur structure
-            logging.info(f"Graph data nodes: {graph_data['nodes']}")
-            logging.info(f"Graph data edges: {graph_data['edges']}")
-
             # Utiliser le template HTML chargé depuis le fichier local
             html_content = self.html_template_content
 
@@ -226,7 +204,6 @@ class Pipe:
                     node_id,
                     title=item.get("title", ""),
                     content=item.get("content", ""),
-                    concepts=item.get("concepts", []),
                     embedding=item.get("embedding", None),
                     url=item.get("url", "URL non disponible"),
                 )
@@ -278,40 +255,6 @@ class Pipe:
             logging.error(f"Erreur lors de la génération d'embedding : {str(e)}")
             raise
 
-    def generate_concepts(self, text: str) -> List[str]:
-        prompt = f"""
-        Analysez le texte suivant provenant de l'Encyclopédie de Diderot et d'Alembert (18ème siècle) et identifiez les concepts clés. Votre tâche est de :
-    
-        1. Extraire les concepts principaux en tenant compte du contexte historique et philosophique de l'Encyclopédie.
-        2. Prioriser les concepts qui reflètent les idées des Lumières, les avancées scientifiques et les débats philosophiques de l'époque.
-        3. Inclure les termes spécifiques à la discipline traitée dans le texte (par exemple, philosophie, sciences naturelles, arts mécaniques, etc.).
-        4. Identifier les concepts qui pourraient être controversés ou novateurs pour l'époque.
-        5. Repérer les définitions importantes ou les tentatives de fixer le sens de certains termes.
-        6. Noter les concepts qui font l'objet de renvois à d'autres articles de l'Encyclopédie.
-        7. Être attentif aux nuances de sens et aux usages particuliers des termes dans ce contexte.
-    
-        Évitez les concepts redondants ou trop généraux. Limitez-vous à un maximum de 10 concepts clés, en privilégiant la pertinence et la spécificité par rapport au texte et à son contexte historique.
-    
-        Texte à analyser :
-        {text}
-    
-        Listez les concepts clés identifiés :
-        """
-
-        parsed_response = self.client.beta.chat.completions.parse(
-            model=self.valves.MODEL_ID,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Vous êtes un expert en histoire des idées du 18ème siècle, spécialisé dans l'Encyclopédie de Diderot et d'Alembert. Votre tâche est d'extraire les concepts clés des textes de l'Encyclopédie avec précision et perspicacité.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            response_format=Concepts,
-        )
-
-        return parsed_response.choices[0].message.parsed.concepts
-
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
         if len(a) != len(b):
             raise ValueError(
@@ -351,18 +294,19 @@ class Pipe:
         references_explored = set()  # Pour éviter les boucles infinies
         node_urls = {}  # Dictionnaire pour stocker les URLs des nœuds utilisés
 
-        query_concepts = self.generate_concepts(query)
-
         async def explore_node(node, depth, similarity=None, from_reference=False):
+            # S'assurer que l'on respecte la profondeur maximale définie
             if depth > self.valves.MAX_DEPTH or node in references_explored:
                 return
 
-            references_explored.add(node)
+            references_explored.add(
+                node
+            )  # Ajouter le nœud exploré à la liste des nœuds déjà visités
+
             if node not in traversal_path:
                 traversal_path.append(node)
                 node_data = self.knowledge_graph.nodes[node]
                 node_content = node_data.get("content", "")
-                node_concepts = node_data.get("concepts", [])
                 node_author = node_data.get("author", "Auteur inconnu")
                 node_domain = node_data.get("domain", "Domaine non spécifié")
                 node_references = node_data.get("references", [])
@@ -379,7 +323,6 @@ class Pipe:
                 expanded_context += f"Article : {node_data.get('title', '')}\n"
                 expanded_context += f"Auteur : {node_author}\n"
                 expanded_context += f"Domaine : {node_domain}\n"
-                expanded_context += f"Concepts clés : {', '.join(node_concepts)}\n"
                 expanded_context += f"Contenu : {filtered_content[node]}\n"
                 expanded_context += (
                     f"URL : {node_url}\n"  # Ajout de l'URL dans le contexte
@@ -405,7 +348,7 @@ class Pipe:
                 # Explorer les renvois
                 for ref in node_references:
                     ref_node = self._find_node_by_title(ref)
-                    if ref_node:
+                    if ref_node and ref_node not in references_explored:
                         await __event_emitter__(
                             {
                                 "type": "message",
@@ -416,21 +359,14 @@ class Pipe:
                         )
                         await explore_node(ref_node, depth + 1, from_reference=True)
 
-                # Explorer les nœuds voisins
-                neighbors = list(self.knowledge_graph.neighbors(node))
-                for neighbor in neighbors:
-                    if neighbor not in traversal_path:
-                        neighbor_data = self.knowledge_graph.nodes[neighbor]
-                        neighbor_concepts = neighbor_data.get("concepts", [])
-                        if self._is_relevant(neighbor_concepts, query_concepts):
-                            await __event_emitter__(
-                                {
-                                    "type": "message",
-                                    "data": {
-                                        "content": f"Exploration du nœud voisin : {neighbor_data.get('title', '')}\n"
-                                    },
-                                }
-                            )
+                # Explorer les nœuds voisins uniquement si la profondeur n'a pas été dépassée
+                if depth < self.valves.MAX_DEPTH:
+                    neighbors = list(self.knowledge_graph.neighbors(node))
+                    for neighbor in neighbors:
+                        if (
+                            neighbor not in traversal_path
+                            and neighbor not in references_explored
+                        ):
                             await explore_node(neighbor, depth + 1)
 
         for node, similarity in relevant_nodes:
@@ -486,10 +422,6 @@ class Pipe:
             node_urls,
         )
 
-    def _extract_relevant_sentences(self, text: str, concepts: List[str]) -> List[str]:
-        sentences = text.split(".")
-        return [s for s in sentences if any(c.lower() in s.lower() for c in concepts)]
-
     async def _prepare_article_content(self, content: str) -> str:
         words = content.split()
         if len(words) <= self.valves.MAX_ARTICLE_WORDS:
@@ -509,7 +441,7 @@ class Pipe:
                     messages=[
                         {
                             "role": "system",
-                            "content": "Vous êtes un expert en résumé de textes historiques.",
+                            "content": "Vous êtes un expert en résumé de textes historiques. Répondez avec le texte résumé, sans rien d'autre",
                         },
                         {"role": "user", "content": summary_prompt},
                     ],
@@ -519,9 +451,6 @@ class Pipe:
             )
 
             return summary
-
-    def _is_relevant(self, node_concepts: List[str], query_concepts: List[str]) -> bool:
-        return len(set(node_concepts) & set(query_concepts)) > 0
 
     def visualize_traversal(self, traversal_path: List[str]) -> Dict:
         G = self.knowledge_graph.subgraph(traversal_path)
@@ -713,7 +642,7 @@ class Pipe:
             return response
 
         except Exception as e:
-            error_msg = f"Erreur lors du traitement de la requête : {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Erreur lors du traitement de la requête : {str(e)}"
             logging.error(error_msg)
             await __event_emitter__(
                 {

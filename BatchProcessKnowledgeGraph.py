@@ -29,7 +29,7 @@ class SimpleKnowledgeGraph:
 
     def create_embeddings(self):
         # Créer les fichiers batch
-        batch_size = 10000
+        batch_size = 800
         batch_file = self.df.copy()
         batch_file_name = 'embedding_batch'
         num_files = len(batch_file) // batch_size + 1
@@ -174,6 +174,6 @@ if __name__ == "__main__":
     openai_api_key = os.getenv("OPENAI_API_KEY")
 
     kg = SimpleKnowledgeGraph(openai_api_key)
-    kg.load_data("data/EDdA_dataframe_cleaned.tsv")
+    kg.load_data("data/EDdA_dataframe_sample.tsv")
     kg.create_embeddings()
-    kg.export_to_jsonld("data/EDdA_knowledge_graph.jsonld")
+    kg.export_to_jsonld("data/EDdA_knowledge_graph_sample.jsonld")
