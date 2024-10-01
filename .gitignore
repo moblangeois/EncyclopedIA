@@ -2,3 +2,10 @@
 /__pycache__/
 /batch_files/
 /_old/
+data/EDdA_knowledge_graph_int8.jsonld
+data/EDdA_knowledge_graph.jsonld
+data/EDdA_dataframe_withContent.tsv
+data/EDdA_dataframe_cleaned.tsv/.env
+/__pycache__/
+/batch_files/
+/_old/

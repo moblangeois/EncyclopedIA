@@ -29,7 +29,7 @@ class SimpleKnowledgeGraph:
 
     def create_embeddings(self):
         # Créer les fichiers batch
-        batch_size = 20000
+        batch_size = 800
         batch_file = self.df.copy()
         batch_file_name = 'embedding_batch'
         num_files = len(batch_file) // batch_size + 1
@@ -50,9 +50,8 @@ class SimpleKnowledgeGraph:
                         "url": "/v1/embeddings",
                         "body": {
                             "input": row["content"],
-                            "model": "text-embedding-3-large",
+                            "model": "text-embedding-3-small",
                             "encoding_format": "float",
-                            'dimensions': 1024
                         }
                     }
                     file.write(json.dumps(payload) + '\n')
@@ -98,7 +97,7 @@ class SimpleKnowledgeGraph:
             
             if fail_flag or len(finished) == len(job_ids):
                 break
-            time.sleep(600)
+            time.sleep(60)
 
         # Télécharger et traiter les fichiers de sortie
         output_files_ids = [self.client.batches.retrieve(job_id).output_file_id for job_id in job_ids]
@@ -175,6 +174,6 @@ if __name__ == "__main__":
     openai_api_key = os.getenv("OPENAI_API_KEY")
 
     kg = SimpleKnowledgeGraph(openai_api_key)
-    kg.load_data("data/EDdA_dataframe_cleaned.tsv")
+    kg.load_data("data/EDdA_dataframe_sample.tsv")
     kg.create_embeddings()
-    kg.export_to_jsonld("data/EDdA_knowledge_graph.jsonld")
+    kg.export_to_jsonld("data/EDdA_knowledge_graph_sample.jsonld")

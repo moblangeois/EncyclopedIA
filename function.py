@@ -1,30 +1,22 @@
 """
-title: Encyclopedia
+title: Encycloscope
 author: Morgan Blangeois
-version: 0.1
+version: 0.8
+requirements: openai>=1.44.1
 """
 
 # Standard library imports
 import os
 import logging
-import pickle
-import base64
-import io
-import traceback
-import time
 import uuid
 import json
-import requests
-from collections import defaultdict
-import re
 import asyncio
 
 # Third-party library imports
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from pydantic import BaseModel, Field
-from typing import List, Dict, Tuple, Any, Union, Optional
+from typing import List, Dict, Tuple, Union, Optional
 from openai import OpenAI
 import tiktoken
 
@@ -33,27 +25,19 @@ from open_webui.utils.misc import get_last_user_message
 from open_webui.apps.webui.models.files import Files
 
 
-class Concepts(BaseModel):
-    """Model for representing extracted concepts."""
-
-    concepts: List[str] = Field(
-        ..., description="List of key concepts extracted from the text"
-    )
-
-
 class Pipe:
     class Valves(BaseModel):
         OPENAI_API_KEY: str = Field(default="", description="Clé API OpenAI")
-        GRAPH_FILE_URL: str = Field(
-            default="https://raw.githubusercontent.com/moblangeois/EncyclopedIA/main/data/output_kg.jsonld",
-            description="URL du fichier du graphe de connaissances JSON-LD",
+        GRAPH_FILE_PATH: str = Field(
+            default="data/EDdA_knowledge_graph_sample.jsonld",
+            description="Chemin local du fichier du graphe de connaissances JSON-LD",
+        )
+        GRAPH_TEMPLATE_PATH: str = Field(
+            default="data/graph_template.html",
+            description="Chemin local du fichier HTML pour le graphe",
         )
         MODEL_ID: str = Field(
             default="gpt-4o-mini", description="Modèle OpenAI à utiliser"
-        )
-        GRAPH_TEMPLATE_URL: str = Field(
-            default="https://raw.githubusercontent.com/moblangeois/EncyclopedIA/main/graph_template.html",
-            description="URL du template HTML pour le graphe",
         )
         MAX_DEPTH: int = Field(
             default=2, description="Profondeur maximale pour suivre les renvois"
@@ -86,15 +70,6 @@ class Pipe:
         try:
             if self.valves.OPENAI_API_KEY:
                 self.client = OpenAI(api_key=self.valves.OPENAI_API_KEY)
-                if __event_emitter__:
-                    await __event_emitter__(
-                        {
-                            "type": "message",
-                            "data": {
-                                "content": "Client OpenAI initialisé avec succès.\n"
-                            },
-                        }
-                    )
             else:
                 if __event_emitter__:
                     await __event_emitter__(
@@ -105,16 +80,27 @@ class Pipe:
                             },
                         }
                     )
-                raise ValueError("La clé API OpenAI n'est pas définie..\n")
+                raise ValueError("La clé API OpenAI n'est pas définie.\n")
 
-            # Check for local file first
-            local_graph_path = "/app/backend/EDdA_knowledge_graph.jsonld"
+            # Récupérer les chemins des fichiers depuis les valves
+            local_graph_path = self.valves.GRAPH_FILE_PATH
+            local_html_template_path = self.valves.GRAPH_TEMPLATE_PATH
+
+            # Charger le graphe depuis le fichier JSON-LD
             if os.path.exists(local_graph_path):
                 await self.load_graph_from_jsonld(local_graph_path, __event_emitter__)
             else:
-                # If local file doesn't exist, download the graph from the URL
-                await self.load_graph_from_url(
-                    self.valves.GRAPH_FILE_URL, __event_emitter__
+                raise FileNotFoundError(
+                    f"Le fichier JSON-LD {local_graph_path} est introuvable."
+                )
+
+            # Charger le template HTML pour le graphe
+            if os.path.exists(local_html_template_path):
+                with open(local_html_template_path, "r", encoding="utf-8") as f:
+                    self.html_template_content = f.read()
+            else:
+                raise FileNotFoundError(
+                    f"Le fichier HTML {local_html_template_path} est introuvable."
                 )
 
         except Exception as e:
@@ -129,146 +115,23 @@ class Pipe:
                 )
             raise
 
-    async def load_graph_from_url(self, url, __event_emitter__=None):
-        """Download and load the knowledge graph from a given URL."""
-        try:
-            response = requests.get(url)
-            response.raise_for_status()  # Raise an error for bad responses
-
-            if response.content:  # Vérifier que le contenu n'est pas vide
-                jsonld_data = response.json()
-            else:
-                if __event_emitter__:
-                    await __event_emitter__(
-                        {
-                            "type": "message",
-                            "data": {"content": "Le fichier JSON-LD récupéré est vide"},
-                        }
-                    )
-                raise ValueError("Le fichier JSON-LD est vide ou invalide.")
-
-            G = nx.Graph()
-
-            for item in jsonld_data:
-                if item["@type"] == "Article":
-                    # Assurez-vous que l'ID n'est pas vide et que le noeud est bien ajouté avec un ID valide
-                    node_id = (
-                        str(item.get("@id", "")).split("/")[-1]
-                        if item.get("@id")
-                        else None
-                    )
-                    if node_id:
-                        embedding = item.get("embedding", None)
-
-                        G.add_node(
-                            node_id,
-                            title=item.get("title", ""),
-                            content=item.get("content", ""),
-                            concepts=item.get("concepts", []),
-                            embedding=embedding,
-                        )
-                    else:
-                        # Log si l'ID est absent ou vide
-                        if __event_emitter__:
-                            await __event_emitter__(
-                                {
-                                    "type": "message",
-                                    "data": {
-                                        "content": f"Erreur : Noeud sans ID valide trouvé. Article : {item.get('title', 'Sans titre')}"
-                                    },
-                                }
-                            )
-
-            self.knowledge_graph = G
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "message",
-                        "data": {
-                            "content": f"Graphe chargé depuis URL avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes.\n"
-                        },
-                    }
-                )
-
-        except requests.RequestException as e:
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "message",
-                        "data": {
-                            "content": f"Erreur lors de la récupération du fichier JSON-LD : {str(e)}"
-                        },
-                    }
-                )
-            raise
-        except Exception as e:
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "message",
-                        "data": {
-                            "content": f"Erreur lors du chargement du graphe : {str(e)}"
-                        },
-                    }
-                )
-            raise
-
     def create_graph_html(self, graph_data):
         try:
-            # Récupérer le template HTML depuis l'URL
-            response = requests.get(self.valves.GRAPH_TEMPLATE_URL)
-            response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
-            html_content = response.text
+            # Utiliser le template HTML chargé depuis le fichier local
+            html_content = self.html_template_content
 
-            # Ajouter des styles CSS pour la hauteur
-            style_to_add = """
-            <style>
-            html, body {
-                height: 100%;
-                margin: 0;
-                padding: 0;
-                overflow: hidden;
-            }
-            #graph-container {
-                width: 100%;
-                height: 100vh;  # Utilise toute la hauteur de la fenêtre
-                position: relative;
-            }
-            #mynetwork {
-                width: 100%;
-                height: 100%;  # L'iframe prend toute la hauteur de son conteneur
-                position: absolute;
-                top: 0;
-                left: 0;
-            }
-            </style>
-            """
-
-            # Insérer les styles juste avant la fermeture de la balise </head>
-            html_content = html_content.replace("</head>", f"{style_to_add}</head>")
-
-            # Remplacer les placeholders avec les données du graphe
             html_content = html_content.replace(
-                "{{nodes}}", json.dumps(graph_data["nodes"])
+                "{{nodes}}", json.dumps(graph_data["nodes"], ensure_ascii=False)
             )
             html_content = html_content.replace(
-                "{{edges}}", json.dumps(graph_data["edges"])
+                "{{edges}}", json.dumps(graph_data["edges"], ensure_ascii=False)
             )
 
             return html_content
 
-        except requests.RequestException as e:
-            logging.error(f"Erreur lors de la récupération du template HTML : {str(e)}")
-            # Utiliser un template de secours simple en cas d'erreur
-            return f"""
-            <!DOCTYPE html>
-            <html>
-            <head><title>Graphe de parcours (version de secours)</title></head>
-            <body>
-                <pre>{json.dumps(graph_data, indent=2)}</pre>
-            </body>
-            </html>
-            """
+        except Exception as e:
+            logging.error(f"Erreur lors de la création du fichier HTML : {str(e)}")
+            return f"<html><body><pre>Erreur : {str(e)}</pre></body></html>"
 
     def _find_node_by_title(self, title: str) -> Optional[str]:
         for node, data in self.knowledge_graph.nodes(data=True):
@@ -341,8 +204,8 @@ class Pipe:
                     node_id,
                     title=item.get("title", ""),
                     content=item.get("content", ""),
-                    concepts=item.get("concepts", []),
-                    embedding=embedding,
+                    embedding=item.get("embedding", None),
+                    url=item.get("url", "URL non disponible"),
                 )
 
             # Utilisation des triples RDF pour créer les arêtes
@@ -374,7 +237,7 @@ class Pipe:
             {
                 "type": "message",
                 "data": {
-                    "content": f"Graphe chargé avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes."
+                    "content": f"Graphe chargé avec {G.number_of_nodes()} nœuds et {G.number_of_edges()} arêtes.\n"
                 },
             }
         )
@@ -392,41 +255,12 @@ class Pipe:
             logging.error(f"Erreur lors de la génération d'embedding : {str(e)}")
             raise
 
-    def generate_concepts(self, text: str) -> List[str]:
-        prompt = f"""
-        Analysez le texte suivant provenant de l'Encyclopédie de Diderot et d'Alembert (18ème siècle) et identifiez les concepts clés. Votre tâche est de :
-    
-        1. Extraire les concepts principaux en tenant compte du contexte historique et philosophique de l'Encyclopédie.
-        2. Prioriser les concepts qui reflètent les idées des Lumières, les avancées scientifiques et les débats philosophiques de l'époque.
-        3. Inclure les termes spécifiques à la discipline traitée dans le texte (par exemple, philosophie, sciences naturelles, arts mécaniques, etc.).
-        4. Identifier les concepts qui pourraient être controversés ou novateurs pour l'époque.
-        5. Repérer les définitions importantes ou les tentatives de fixer le sens de certains termes.
-        6. Noter les concepts qui font l'objet de renvois à d'autres articles de l'Encyclopédie.
-        7. Être attentif aux nuances de sens et aux usages particuliers des termes dans ce contexte.
-    
-        Évitez les concepts redondants ou trop généraux. Limitez-vous à un maximum de 10 concepts clés, en privilégiant la pertinence et la spécificité par rapport au texte et à son contexte historique.
-    
-        Texte à analyser :
-        {text}
-    
-        Listez les concepts clés identifiés :
-        """
-
-        parsed_response = self.client.beta.chat.completions.parse(
-            model=self.valves.MODEL_ID,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Vous êtes un expert en histoire des idées du 18ème siècle, spécialisé dans l'Encyclopédie de Diderot et d'Alembert. Votre tâche est d'extraire les concepts clés des textes de l'Encyclopédie avec précision et perspicacité.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            response_format=Concepts,
-        )
-
-        return parsed_response.choices[0].message.parsed.concepts
-
     def _cosine_similarity(self, a: List[float], b: List[float]) -> float:
+        if len(a) != len(b):
+            raise ValueError(
+                f"Les dimensions des embeddings ne correspondent pas : {len(a)} != {len(b)}"
+            )
+
         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
     async def _retrieve_relevant_nodes(
@@ -453,27 +287,33 @@ class Pipe:
         query: str,
         relevant_nodes: List[Tuple[str, float]],
         __event_emitter__=None,
-    ) -> Tuple[str, List[str], Dict[str, str], str]:
+    ) -> Tuple[str, List[str], Dict[str, str], str, Dict[str, str]]:
         expanded_context = ""
         traversal_path = []
         filtered_content = {}
         references_explored = set()  # Pour éviter les boucles infinies
-
-        query_concepts = self.generate_concepts(query)
+        node_urls = {}  # Dictionnaire pour stocker les URLs des nœuds utilisés
 
         async def explore_node(node, depth, similarity=None, from_reference=False):
+            # S'assurer que l'on respecte la profondeur maximale définie
             if depth > self.valves.MAX_DEPTH or node in references_explored:
                 return
 
-            references_explored.add(node)
+            references_explored.add(
+                node
+            )  # Ajouter le nœud exploré à la liste des nœuds déjà visités
+
             if node not in traversal_path:
                 traversal_path.append(node)
                 node_data = self.knowledge_graph.nodes[node]
                 node_content = node_data.get("content", "")
-                node_concepts = node_data.get("concepts", [])
                 node_author = node_data.get("author", "Auteur inconnu")
                 node_domain = node_data.get("domain", "Domaine non spécifié")
                 node_references = node_data.get("references", [])
+                node_url = node_data.get("url", "URL non disponible")
+
+                # Ajouter l'URL de l'article au dictionnaire
+                node_urls[node_data.get("title", node)] = node_url
 
                 prepared_content = await self._prepare_article_content(node_content)
                 filtered_content[node] = prepared_content
@@ -483,8 +323,10 @@ class Pipe:
                 expanded_context += f"Article : {node_data.get('title', '')}\n"
                 expanded_context += f"Auteur : {node_author}\n"
                 expanded_context += f"Domaine : {node_domain}\n"
-                expanded_context += f"Concepts clés : {', '.join(node_concepts)}\n"
                 expanded_context += f"Contenu : {filtered_content[node]}\n"
+                expanded_context += (
+                    f"URL : {node_url}\n"  # Ajout de l'URL dans le contexte
+                )
                 if similarity is not None:
                     expanded_context += (
                         f"Similarité avec la requête : {similarity:.2f}\n"
@@ -506,7 +348,7 @@ class Pipe:
                 # Explorer les renvois
                 for ref in node_references:
                     ref_node = self._find_node_by_title(ref)
-                    if ref_node:
+                    if ref_node and ref_node not in references_explored:
                         await __event_emitter__(
                             {
                                 "type": "message",
@@ -517,21 +359,14 @@ class Pipe:
                         )
                         await explore_node(ref_node, depth + 1, from_reference=True)
 
-                # Explorer les nœuds voisins
-                neighbors = list(self.knowledge_graph.neighbors(node))
-                for neighbor in neighbors:
-                    if neighbor not in traversal_path:
-                        neighbor_data = self.knowledge_graph.nodes[neighbor]
-                        neighbor_concepts = neighbor_data.get("concepts", [])
-                        if self._is_relevant(neighbor_concepts, query_concepts):
-                            await __event_emitter__(
-                                {
-                                    "type": "message",
-                                    "data": {
-                                        "content": f"Exploration du nœud voisin : {neighbor_data.get('title', '')}\n"
-                                    },
-                                }
-                            )
+                # Explorer les nœuds voisins uniquement si la profondeur n'a pas été dépassée
+                if depth < self.valves.MAX_DEPTH:
+                    neighbors = list(self.knowledge_graph.neighbors(node))
+                    for neighbor in neighbors:
+                        if (
+                            neighbor not in traversal_path
+                            and neighbor not in references_explored
+                        ):
                             await explore_node(neighbor, depth + 1)
 
         for node, similarity in relevant_nodes:
@@ -543,15 +378,25 @@ class Pipe:
         2. Mettre en évidence les liens entre les concepts et les idées des différents auteurs.
         3. Expliquer les éventuelles divergences ou évolutions dans la compréhension des concepts.
         4. Contextualiser la réponse dans le cadre des idées des Lumières du 18ème siècle.
-        5. Mentionner explicitement les sources (articles et auteurs) utilisées dans votre réponse.
+        5. Mentionner explicitement les sources (articles et auteurs) utilisées dans votre réponse, mais pas dans une partie à part.
         6. Indiquer les renvois pertinents et expliquer leur importance dans le contexte de la requête.
         7. Ne s'appuyer que sur le contexte fourni.
     
+        Il faut répondre en suivant la structure suivante uniquement :
+    
+        ### Synthèse des articles
+    
+        [Synthèse]
+    
+        ### Analyse des concepts
+    
+        [Analyse]
+    
         Contexte : 
         {expanded_context}
-    
+        
         Requête : {query}
-    
+        
         Réponse :"""
 
         final_answer = (
@@ -569,11 +414,13 @@ class Pipe:
             .message.content
         )
 
-        return expanded_context, traversal_path, filtered_content, final_answer
-
-    def _extract_relevant_sentences(self, text: str, concepts: List[str]) -> List[str]:
-        sentences = text.split(".")
-        return [s for s in sentences if any(c.lower() in s.lower() for c in concepts)]
+        return (
+            expanded_context,
+            traversal_path,
+            filtered_content,
+            final_answer,
+            node_urls,
+        )
 
     async def _prepare_article_content(self, content: str) -> str:
         words = content.split()
@@ -594,7 +441,7 @@ class Pipe:
                     messages=[
                         {
                             "role": "system",
-                            "content": "Vous êtes un expert en résumé de textes historiques.",
+                            "content": "Vous êtes un expert en résumé de textes historiques. Répondez avec le texte résumé, sans rien d'autre",
                         },
                         {"role": "user", "content": summary_prompt},
                     ],
@@ -605,13 +452,14 @@ class Pipe:
 
             return summary
 
-    def _is_relevant(self, node_concepts: List[str], query_concepts: List[str]) -> bool:
-        return len(set(node_concepts) & set(query_concepts)) > 0
-
     def visualize_traversal(self, traversal_path: List[str]) -> Dict:
         G = self.knowledge_graph.subgraph(traversal_path)
         nodes = []
         edges = []
+
+        if not traversal_path:
+            logging.error("Le chemin de parcours est vide.")
+            return {"nodes": [], "edges": []}  # Retourner des tableaux vides
 
         for i, node in enumerate(traversal_path):
             node_data = G.nodes[node]
@@ -619,14 +467,16 @@ class Pipe:
                 {
                     "id": node,
                     "label": f"{i+1}. {node_data.get('title', node)}",
-                    "content": node_data.get("content", ""),
+                    "content": node_data.get("content", "Pas de contenu disponible"),
                     "references": node_data.get("references", []),
-                    "order": i,
+                    "order": i,  # Ordre pour surligner le chemin
                 }
             )
 
         for edge in G.edges():
             edges.append({"from": edge[0], "to": edge[1]})
+
+        return {"nodes": nodes, "edges": edges}
 
         # Ajouter des arêtes pour les renvois
         for i, node in enumerate(traversal_path):
@@ -648,16 +498,9 @@ class Pipe:
 
     async def query(
         self, query: str, __event_emitter__=None
-    ) -> Tuple[str, List[str], Dict[str, str]]:
+    ) -> Tuple[str, List[str], Dict[str, str], str, Dict[str, str]]:
         try:
             query_embedding = self.get_embedding(query)
-
-            await __event_emitter__(
-                {
-                    "type": "message",
-                    "data": {"content": "Recherche des nœuds pertinents...\n"},
-                }
-            )
 
             relevant_nodes = await self._retrieve_relevant_nodes(
                 query_embedding, query, __event_emitter__=__event_emitter__
@@ -681,9 +524,13 @@ class Pipe:
                 }
             )
 
-            expanded_context, traversal_path, filtered_content, final_answer = (
-                await self._expand_context(query, relevant_nodes, __event_emitter__)
-            )
+            (
+                expanded_context,
+                traversal_path,
+                filtered_content,
+                final_answer,
+                node_urls,
+            ) = await self._expand_context(query, relevant_nodes, __event_emitter__)
 
             await __event_emitter__(
                 {
@@ -692,7 +539,7 @@ class Pipe:
                 }
             )
 
-            return final_answer, traversal_path, filtered_content
+            return final_answer, traversal_path, filtered_content, node_urls
 
         except Exception as e:
             logging.error(f"Erreur dans la méthode query : {str(e)}")
@@ -729,11 +576,12 @@ class Pipe:
                 }
             )
 
-            # Utiliser asyncio.wait_for pour implémenter un timeout
             try:
-                answer, traversal_path, _ = await asyncio.wait_for(
-                    self.query(user_message, __event_emitter__),
-                    timeout=self.valves.QUERY_TIMEOUT,
+                answer, traversal_path, filtered_content, node_urls = (
+                    await asyncio.wait_for(
+                        self.query(user_message, __event_emitter__),
+                        timeout=self.valves.QUERY_TIMEOUT,
+                    )
                 )
             except asyncio.TimeoutError:
                 raise TimeoutError(
@@ -777,7 +625,12 @@ class Pipe:
                 }
             )
 
-            response = f"""Requête : {user_message}\nRéponse : {answer}\nGraphe de parcours :\n\n{{{{HTML_FILE_ID_{graph_file_id}}}}}
+            # Construction des liens URL à inclure dans la réponse finale
+            urls_section = "\n\n### URLs des articles utilisés :\n"
+            for title, url in node_urls.items():
+                urls_section += f"- [{title}]({url})\n"
+
+            response = f"""{answer}\n\n### Graphe de parcours \n\n{{{{HTML_FILE_ID_{graph_file_id}}}}}\n{urls_section}
             """
 
             await __event_emitter__(
@@ -789,7 +642,7 @@ class Pipe:
             return response
 
         except Exception as e:
-            error_msg = f"Erreur lors du traitement de la requête : {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Erreur lors du traitement de la requête : {str(e)}"
             logging.error(error_msg)
             await __event_emitter__(
                 {
